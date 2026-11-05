@@ -1006,10 +1006,9 @@ async def personal_message_handler(event):
             # ROUTING 1: GENERAL APP RECOMMENDATION
             # ------------------------------------------------
 
-            if is_generic_app_request(incoming_text):
+                        if is_generic_app_request(incoming_text):
 
-                await handle_generic_app_request(sender_id)
-
+                await handle_generic_app_request(event)
                 record_reply_time(sender_id)
                 return
 
@@ -1020,7 +1019,7 @@ async def personal_message_handler(event):
             if is_specific_app_request(incoming_text):
 
                 await handle_specific_app_lookup(
-                    sender_id,
+                    event,
                     incoming_text,
                 )
 
