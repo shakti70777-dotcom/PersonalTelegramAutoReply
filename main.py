@@ -950,17 +950,17 @@ async def personal_message_handler(event):
             # Generic app requests are handled using official-channel posts.
             if is_generic_app_request(incoming_text):
                 await handle_generic_app_request(sender_id)
-                settings["last_replied"][sender_id] = time.time()
+                last_replied[sender_id] = time.time()
                 return
 
             # Specific app names are checked only against the official channel.
             if looks_like_specific_app_name(incoming_text):
                 await handle_specific_app_lookup(sender_id, incoming_text)
-                settings["last_replied"][sender_id] = time.time()
+                last_replied[sender_id] = time.time()
                 return
 
             # Ordinary conversation uses OpenAI when AI replies are enabled.
-            if not settings["ai_reply_enabled"]:
+            if not ai_reply_enabled:
                 return
 
             if is_common_conversation(incoming_text):
