@@ -981,8 +981,7 @@ async def personal_message_handler(event):
                     reply_text,
                     link_preview=False,
                 )
-                settings["last_replied"][sender_id] = time.time()
-
+                last_replied[sender_id] = time.time()
     except Exception:
         logger.exception("Error while handling an incoming personal message.")
 
