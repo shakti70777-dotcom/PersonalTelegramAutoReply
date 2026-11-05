@@ -748,10 +748,9 @@ async def forward_channel_post(
             from_peer=channel,
         )
 
-        await telegram_client.send_message(
-            sender_id,
-            APP_LISTED_MESSAGE,
-            link_preview=False,
+        await event.respond(
+    reply_text,
+    link_preview=False,
         )
 
         return True
