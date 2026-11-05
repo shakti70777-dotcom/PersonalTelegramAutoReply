@@ -938,7 +938,7 @@ async def personal_message_handler(event):
         if not sender or getattr(sender, "bot", False):
             return
 
-        if not settings["auto_reply_enabled"]:
+        if not auto_reply_enabled:
             return
 
         lock = sender_locks.setdefault(sender_id, asyncio.Lock())
