@@ -743,26 +743,21 @@ async def forward_channel_post(
         channel = await get_official_channel()
 
         await telegram_client.forward_messages(
-            entity=sender_id,
+            entity=event.chat_id,
             messages=channel_message,
             from_peer=channel,
         )
 
         await event.respond(
-    reply_text,
-    link_preview=False,
+            reply_text,
+            link_preview=False,
         )
 
         return True
 
     except Exception:
-        logger.exception(
-            "Failed to forward official channel post to sender_id=%s",
-            sender_id,
-        )
-
+        logger.exception("Error while forwarding channel post")
         return False
-
 
 # ============================================================
 # HANDLE SPECIFIC APP LOOKUP
