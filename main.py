@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import logging
 import os
@@ -14,13 +15,19 @@ from aiogram.types import (
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
+
 
 # ==================================================
 # CONFIGURATION
 # ==================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+
+try:
+    OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+except ValueError:
+    OWNER_ID = 0
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is missing.")
@@ -28,7 +35,10 @@ if not BOT_TOKEN:
 if OWNER_ID <= 0:
     raise RuntimeError("OWNER_ID environment variable is missing or invalid.")
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 bot = Bot(
@@ -39,6 +49,7 @@ bot = Bot(
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
+
 
 # ==================================================
 # SETTINGS
@@ -60,20 +71,44 @@ DEFAULT_SETTINGS = {
     "total_replied": 0,
 }
 
+admin_input_mode = {}
+
 
 def load_settings():
+    settings_data = DEFAULT_SETTINGS.copy()
+
     if not SETTINGS_FILE.exists():
-        return DEFAULT_SETTINGS.copy()
+        return settings_data
 
     try:
         with SETTINGS_FILE.open("r", encoding="utf-8") as file:
-            saved = json.load(file)
+            saved_data = json.load(file)
 
-        settings_data = DEFAULT_SETTINGS.copy()
-        settings_data.update(saved)
+        if isinstance(saved_data, dict):
+            settings_data.update(saved_data)
 
         if not isinstance(settings_data.get("keyword_replies"), dict):
             settings_data["keyword_replies"] = {}
+
+        if settings_data.get("reply_mode") not in {"all", "keywords"}:
+            settings_data["reply_mode"] = "all"
+
+        if not isinstance(settings_data.get("enabled"), bool):
+            settings_data["enabled"] = True
+
+        try:
+            delay = int(settings_data.get("delay_seconds", 0))
+            settings_data["delay_seconds"] = max(0, min(delay, 3600))
+        except (TypeError, ValueError):
+            settings_data["delay_seconds"] = 0
+
+        for counter in ("total_received", "total_replied"):
+            try:
+                settings_data[counter] = max(
+                    0, int(settings_data.get(counter, 0))
+                )
+            except (TypeError, ValueError):
+                settings_data[counter] = 0
 
         return settings_data
 
@@ -84,19 +119,19 @@ def load_settings():
 
 settings = load_settings()
 
-# Stores the next expected input from the admin
-admin_input_mode = {}
-
 
 def save_settings():
     try:
-        with SETTINGS_FILE.open("w", encoding="utf-8") as file:
+        temporary_file = SETTINGS_FILE.with_suffix(".tmp")
+
+        with temporary_file.open("w", encoding="utf-8") as file:
             json.dump(settings, file, ensure_ascii=False, indent=2)
+
+        temporary_file.replace(SETTINGS_FILE)
+
     except OSError:
         logger.exception("Could not save settings.json")
-
-
-# ==================================================
+        # ==================================================
 # KEYBOARDS
 # ==================================================
 
@@ -222,6 +257,12 @@ def back_keyboard():
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="❌ Cancel",
+                    callback_data="cancel_input",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="⬅️ Back to Admin Panel",
                     callback_data="admin_home",
                 ),
@@ -241,12 +282,16 @@ def is_admin(user_id: int) -> bool:
 def admin_status_text():
     status = "🟢 ON" if settings["enabled"] else "🔴 OFF"
 
+    language = html.escape(str(settings["language"]))
+    reply_mode = html.escape(str(settings["reply_mode"]).title())
+    delay = html.escape(str(settings["delay_seconds"]))
+
     return (
         "⚙️ <b>AUTO-REPLY ADMIN PANEL</b>\n\n"
         f"📡 Status: <b>{status}</b>\n"
-        f"🌐 Language: <b>{settings['language']}</b>\n"
-        f"🎯 Reply Mode: <b>{settings['reply_mode'].title()}</b>\n"
-        f"⏱ Delay: <b>{settings['delay_seconds']} seconds</b>\n\n"
+        f"🌐 Language: <b>{language}</b>\n"
+        f"🎯 Reply Mode: <b>{reply_mode}</b>\n"
+        f"⏱ Delay: <b>{delay} seconds</b>\n\n"
         "Select an option below:"
     )
 
@@ -258,158 +303,174 @@ async def show_admin_panel(message: Message):
     )
 
 
-# ==================================================
+async def safe_edit_message(
+    callback: CallbackQuery,
+    text: str,
+    reply_markup=None,
+):
+    if callback.message is None:
+        return
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=reply_markup,
+        )
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error).lower():
+            return
+        raise
+
+
+def clear_admin_input(user_id: int):
+    admin_input_mode.pop(user_id, None)
+    # ==================================================
 # START & COMMANDS
 # ==================================================
 
 @router.message(CommandStart())
-async def start_handler(message: Message):
+async def start_command(message: Message):
+    if message.from_user is None:
+        return
+
+    clear_admin_input(message.from_user.id)
+
     await message.answer(
-        "🤖 <b>24x7 Reply Assistant</b>\n\n"
-        "This bot provides automatic replies.\n\n"
+        "👋 Welcome to <b>24x7 Reply Assistant</b>!\n\n"
+        "This bot can automatically reply to messages sent to this bot.\n\n"
         "Use /help to see available commands."
     )
 
 
 @router.message(Command("help"))
-async def help_handler(message: Message):
+async def help_command(message: Message):
     await message.answer(
-        "📘 <b>Available Commands</b>\n\n"
+        "<b>Available Commands</b>\n\n"
         "/start — Start the bot\n"
         "/help — Show help\n"
-        "/admin — Open Admin Panel"
+        "/admin — Open admin panel\n"
+        "/on — Enable auto-reply\n"
+        "/off — Disable auto-reply\n"
+        "/setreply — Change auto-reply message\n"
+        "/setdelay — Set reply delay\n"
+        "/addkeyword — Add a keyword reply\n"
+        "/delkeyword — Delete a keyword reply\n"
+        "/cancel — Cancel current input"
     )
 
 
 @router.message(Command("admin"))
 async def admin_command(message: Message):
+    if message.from_user is None:
+        return
+
+    clear_admin_input(message.from_user.id)
+
     if not is_admin(message.from_user.id):
-        await message.answer("⛔ Access denied.")
+        await message.answer("⛔ You are not authorized to use the admin panel.")
         return
 
     await show_admin_panel(message)
 
 
 @router.message(Command("on"))
-async def turn_on_command(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Access denied.")
+async def enable_command(message: Message):
+    if message.from_user is None or not is_admin(message.from_user.id):
         return
 
+    clear_admin_input(message.from_user.id)
     settings["enabled"] = True
     save_settings()
-    await message.answer("🟢 Auto-Reply enabled.")
+
+    await message.answer("✅ Auto-reply is now ON.")
 
 
 @router.message(Command("off"))
-async def turn_off_command(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Access denied.")
+async def disable_command(message: Message):
+    if message.from_user is None or not is_admin(message.from_user.id):
         return
 
+    clear_admin_input(message.from_user.id)
     settings["enabled"] = False
     save_settings()
-    await message.answer("🔴 Auto-Reply disabled.")
+
+    await message.answer("⏸️ Auto-reply is now OFF.")
+
+
+@router.message(Command("cancel"))
+async def cancel_command(message: Message):
+    if message.from_user is None:
+        return
+
+    clear_admin_input(message.from_user.id)
+
+    if is_admin(message.from_user.id):
+        await message.answer(
+            "❌ Input cancelled.",
+            reply_markup=admin_panel_kb()
+        )
+    else:
+        await message.answer("Input cancelled.")
 
 
 @router.message(Command("setreply"))
-async def set_reply_command(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Access denied.")
+async def setreply_command(message: Message):
+    if message.from_user is None or not is_admin(message.from_user.id):
         return
 
-    new_reply = message.text.partition(" ")[2].strip()
+    clear_admin_input(message.from_user.id)
+    admin_input_mode[message.from_user.id] = "reply"
 
-    if not new_reply:
-        admin_input_mode[message.from_user.id] = "reply"
-        await message.answer(
-            "💬 Send your new Auto-Reply message.",
-            reply_markup=back_keyboard(),
-        )
-        return
-
-    settings["reply_message"] = new_reply
-    save_settings()
-    await message.answer("✅ Auto-Reply message updated.")
+    await message.answer(
+        "✍️ Send the new auto-reply message now:",
+        reply_markup=back_keyboard()
+    )
 
 
 @router.message(Command("setdelay"))
-async def set_delay_command(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Access denied.")
+async def setdelay_command(message: Message):
+    if message.from_user is None or not is_admin(message.from_user.id):
         return
 
-    value = message.text.partition(" ")[2].strip()
+    clear_admin_input(message.from_user.id)
+    admin_input_mode[message.from_user.id] = "delay"
 
-    if not value:
-        admin_input_mode[message.from_user.id] = "delay"
-        await message.answer(
-            "⏱ Send delay in seconds (0–3600).",
-            reply_markup=back_keyboard(),
-        )
-        return
-
-    try:
-        delay = int(value)
-        if not 0 <= delay <= 3600:
-            raise ValueError
-    except ValueError:
-        await message.answer("Enter a number between 0 and 3600.")
-        return
-
-    settings["delay_seconds"] = delay
-    save_settings()
-    await message.answer(f"✅ Reply delay set to {delay} seconds.")
+    await message.answer(
+        "⏱️ Send the reply delay in seconds.\n"
+        "Enter a number from 0 to 3600:",
+        reply_markup=back_keyboard()
+    )
 
 
 @router.message(Command("addkeyword"))
-async def add_keyword_command(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Access denied.")
+async def addkeyword_command(message: Message):
+    if message.from_user is None or not is_admin(message.from_user.id):
         return
 
-    content = message.text.partition(" ")[2].strip()
+    clear_admin_input(message.from_user.id)
+    admin_input_mode[message.from_user.id] = "add_keyword"
 
-    if "|" not in content:
-        await message.answer(
-            "Use:\n<code>/addkeyword keyword | reply message</code>"
-        )
-        return
-
-    keyword, reply = content.split("|", 1)
-    keyword = keyword.strip().lower()
-    reply = reply.strip()
-
-    if not keyword or not reply:
-        await message.answer("Keyword and reply message cannot be empty.")
-        return
-
-    settings["keyword_replies"][keyword] = reply
-    save_settings()
-
-    await message.answer(f"✅ Keyword reply saved for: <b>{keyword}</b>")
+    await message.answer(
+        "🔑 Send the keyword and reply in this format:\n\n"
+        "<code>keyword | reply message</code>\n\n"
+        "Example:\n"
+        "<code>price | Please contact support for pricing.</code>",
+        reply_markup=back_keyboard()
+    )
 
 
 @router.message(Command("delkeyword"))
-async def delete_keyword_command(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Access denied.")
+async def delkeyword_command(message: Message):
+    if message.from_user is None or not is_admin(message.from_user.id):
         return
 
-    keyword = message.text.partition(" ")[2].strip().lower()
+    clear_admin_input(message.from_user.id)
+    admin_input_mode[message.from_user.id] = "delete_keyword"
 
-    if not keyword:
-        await message.answer("Use: <code>/delkeyword keyword</code>")
-        return
-
-    if keyword not in settings["keyword_replies"]:
-        await message.answer("Keyword not found.")
-        return
-
-    del settings["keyword_replies"][keyword]
-    save_settings()
-
-    await message.answer(f"🗑 Keyword removed: <b>{keyword}</b>")
+    await message.answer(
+        "🗑️ Send the exact keyword you want to delete:",
+        reply_markup=back_keyboard()
+    )
 
 
 # ==================================================
@@ -418,291 +479,409 @@ async def delete_keyword_command(message: Message):
 
 @router.callback_query(F.data == "admin_home")
 async def admin_home_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
     await callback.answer()
-    await callback.message.edit_text(
-        admin_status_text(),
-        reply_markup=admin_panel_keyboard(),
-    )
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            admin_status_text(),
+            reply_markup=admin_panel_kb()
+        )
 
 
-@router.callback_query(F.data == "admin_enable")
-async def enable_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+@router.callback_query(F.data == "cancel_input")
+async def cancel_input_callback(callback: CallbackQuery):
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
+    await callback.answer("Input cancelled.")
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            "❌ Input cancelled.\n\n" + admin_status_text(),
+            reply_markup=admin_panel_kb()
+        )
+
+
+@router.callback_query(F.data == "toggle_on")
+async def toggle_on_callback(callback: CallbackQuery):
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
+        return
+
+    clear_admin_input(callback.from_user.id)
     settings["enabled"] = True
     save_settings()
+    await callback.answer("Auto-reply enabled.")
 
-    await callback.answer("Auto-Reply enabled.")
-    await callback.message.edit_text(
-        admin_status_text(),
-        reply_markup=admin_panel_keyboard(),
-    )
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            admin_status_text(),
+            reply_markup=admin_panel_kb()
+        )
 
 
-@router.callback_query(F.data == "admin_disable")
-async def disable_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+@router.callback_query(F.data == "toggle_off")
+async def toggle_off_callback(callback: CallbackQuery):
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
     settings["enabled"] = False
     save_settings()
+    await callback.answer("Auto-reply disabled.")
 
-    await callback.answer("Auto-Reply disabled.")
-    await callback.message.edit_text(
-        admin_status_text(),
-        reply_markup=admin_panel_keyboard(),
-    )
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            admin_status_text(),
+            reply_markup=admin_panel_kb()
+        )
 
 
-@router.callback_query(F.data == "admin_set_reply")
+@router.callback_query(F.data == "set_reply")
 async def set_reply_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
     admin_input_mode[callback.from_user.id] = "reply"
-
     await callback.answer()
-    await callback.message.answer(
-        "💬 Send your new Auto-Reply message.\n\n"
-        "Your next text message will be saved as the reply.",
-        reply_markup=back_keyboard(),
-    )
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            "✍️ Send your new auto-reply message:",
+            reply_markup=back_keyboard()
+        )
 
 
-@router.callback_query(F.data == "admin_language")
-async def language_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+@router.callback_query(F.data == "set_language")
+async def set_language_callback(callback: CallbackQuery):
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
     await callback.answer()
-    await callback.message.edit_text(
-        "🌐 <b>Select Reply Language</b>",
-        reply_markup=language_keyboard(),
-    )
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            "🌐 Choose a language label:",
+            reply_markup=language_kb()
+        )
 
 
-@router.callback_query(F.data.startswith("lang_"))
+@router.callback_query(F.data.startswith("language_"))
 async def language_select_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
-    language = callback.data.replace("lang_", "", 1)
-
-    if language not in {"English", "Hindi", "Bengali", "Custom"}:
-        await callback.answer("Invalid language.", show_alert=True)
-        return
-
+    language = callback.data.replace("language_", "", 1)
     settings["language"] = language
     save_settings()
+    await callback.answer("Language label updated.")
 
-    await callback.answer(f"Language set to {language}.")
-    await callback.message.edit_text(
-        admin_status_text(),
-        reply_markup=admin_panel_keyboard(),
-    )
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            "🌐 Language label saved.\n\n"
+            "Note: this setting changes the label only; it does not automatically translate messages.\n\n"
+            + admin_status_text(),
+            reply_markup=admin_panel_kb()
+        )
 
 
-@router.callback_query(F.data == "admin_reply_mode")
+@router.callback_query(F.data == "reply_mode")
 async def reply_mode_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
     await callback.answer()
-    await callback.message.edit_text(
-        "🎯 <b>Select Reply Mode</b>",
-        reply_markup=reply_mode_keyboard(),
-    )
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            "⚙️ Choose the auto-reply mode:",
+            reply_markup=reply_mode_kb()
+        )
 
 
 @router.callback_query(F.data.startswith("mode_"))
-async def mode_select_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+async def reply_mode_select_callback(callback: CallbackQuery):
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
     mode = callback.data.replace("mode_", "", 1)
 
-    if mode not in {"all", "keywords"}:
-        await callback.answer("Invalid reply mode.", show_alert=True)
+    if mode not in ("all", "keywords"):
+        await callback.answer("Invalid mode.", show_alert=True)
         return
 
     settings["reply_mode"] = mode
     save_settings()
-
     await callback.answer("Reply mode updated.")
-    await callback.message.edit_text(
-        admin_status_text(),
-        reply_markup=admin_panel_keyboard(),
-    )
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            admin_status_text(),
+            reply_markup=admin_panel_kb()
+        )
 
 
-@router.callback_query(F.data == "admin_keywords")
-async def keywords_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+@router.callback_query(F.data == "manage_keywords")
+async def manage_keywords_callback(callback: CallbackQuery):
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
     await callback.answer()
-    await callback.message.answer(
-        "🔑 <b>Keyword Replies</b>\n\n"
-        "Add a keyword:\n"
-        "<code>/addkeyword keyword | reply message</code>\n\n"
-        "Example:\n"
-        "<code>/addkeyword price | Please check our pricing details.</code>\n\n"
-        "Delete a keyword:\n"
-        "<code>/delkeyword keyword</code>",
-        reply_markup=back_keyboard(),
-    )
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            "🔑 <b>Keyword Replies</b>\n\n"
+            "Add keyword:\n"
+            "<code>/addkeyword</code>\n\n"
+            "Delete keyword:\n"
+            "<code>/delkeyword</code>\n\n"
+            "Use this format to add:\n"
+            "<code>keyword | reply message</code>",
+            reply_markup=back_keyboard()
+        )
 
 
-@router.callback_query(F.data == "admin_delay")
-async def delay_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+@router.callback_query(F.data == "set_delay")
+async def set_delay_callback(callback: CallbackQuery):
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
     admin_input_mode[callback.from_user.id] = "delay"
-
     await callback.answer()
-    await callback.message.answer(
-        "⏱ Send delay in seconds (0–3600).\n"
-        "Send <code>0</code> for no delay.",
-        reply_markup=back_keyboard(),
-    )
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            "⏱️ Send the delay in seconds (0–3600):",
+            reply_markup=back_keyboard()
+        )
 
 
-@router.callback_query(F.data == "admin_preview")
-async def preview_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+@router.callback_query(F.data == "preview_reply")
+async def preview_reply_callback(callback: CallbackQuery):
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
     await callback.answer()
-    await callback.message.answer(
-        "👁 <b>Reply Preview</b>\n\n"
-        + settings["reply_message"],
-        reply_markup=back_keyboard(),
-    )
+
+    preview_text = html.escape(str(settings.get("reply_text", "")))
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            "👀 <b>Auto-reply Preview</b>\n\n"
+            + (preview_text or "<i>No reply message configured.</i>"),
+            reply_markup=back_keyboard()
+        )
 
 
-@router.callback_query(F.data == "admin_stats")
-async def stats_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+@router.callback_query(F.data == "show_stats")
+async def show_stats_callback(callback: CallbackQuery):
+    if callback.from_user is None or not is_admin(callback.from_user.id):
+        await callback.answer("Not authorized.", show_alert=True)
         return
 
+    clear_admin_input(callback.from_user.id)
     await callback.answer()
-    await callback.message.answer(
-        "📊 <b>Auto-Reply Statistics</b>\n\n"
-        f"📩 Messages received: <b>{settings['total_received']}</b>\n"
-        f"💬 Replies sent: <b>{settings['total_replied']}</b>",
-        reply_markup=back_keyboard(),
+
+    if callback.message:
+        await safe_edit_message(
+            callback.message,
+            "📊 <b>Bot Statistics</b>\n\n"
+            f"Messages received: {settings.get('total_received', 0)}\n"
+            f"Replies sent: {settings.get('total_replied', 0)}",
+            reply_markup=back_keyboard()
+            
     )
-
-
-# ==================================================
-# TEXT MESSAGE HANDLER
+        # ==================================================
+# MESSAGE HANDLER
 # ==================================================
 
 @router.message(F.text)
 async def text_message_handler(message: Message):
-    if message.from_user is None:
+    if message.from_user is None or message.text is None:
         return
 
     user_id = message.from_user.id
+    text = message.text.strip()
 
-    # Admin input handling
-    if is_admin(user_id):
+    # Ignore messages sent by bots
+    if message.from_user.is_bot:
+        return
+
+    # Handle admin input
+    if is_admin(user_id) and user_id in admin_input_mode:
         mode = admin_input_mode.get(user_id)
 
         if mode == "reply":
-            settings["reply_message"] = message.text
+            settings["reply_text"] = text
+            clear_admin_input(user_id)
             save_settings()
-            admin_input_mode.pop(user_id, None)
 
-            await message.answer("✅ Auto-Reply message updated.")
+            await message.answer(
+                "✅ Auto-reply message updated.",
+                reply_markup=admin_panel_kb()
+            )
             return
 
         if mode == "delay":
             try:
-                delay = int(message.text.strip())
+                delay = int(text)
 
                 if not 0 <= delay <= 3600:
-                    raise ValueError
+                    await message.answer(
+                        "⚠️ Enter a number from 0 to 3600 seconds.",
+                        reply_markup=back_keyboard()
+                    )
+                    return
 
+                settings["delay"] = delay
+                clear_admin_input(user_id)
+                save_settings()
+
+                await message.answer(
+                    f"✅ Reply delay set to {delay} seconds.",
+                    reply_markup=admin_panel_kb()
+                )
             except ValueError:
                 await message.answer(
-                    "❌ Invalid delay. Enter a number between 0 and 3600."
+                    "⚠️ Please enter a valid whole number from 0 to 3600.",
+                    reply_markup=back_keyboard()
+                )
+            return
+
+        if mode == "add_keyword":
+            if "|" not in text:
+                await message.answer(
+                    "⚠️ Invalid format.\n\n"
+                    "Use:\n<code>keyword | reply message</code>",
+                    reply_markup=back_keyboard()
                 )
                 return
 
-            settings["delay_seconds"] = delay
+            keyword, reply_text = text.split("|", 1)
+            keyword = keyword.strip().lower()
+            reply_text = reply_text.strip()
+
+            if not keyword or not reply_text:
+                await message.answer(
+                    "⚠️ Both keyword and reply message are required.",
+                    reply_markup=back_keyboard()
+                )
+                return
+
+            settings.setdefault("keyword_replies", {})[keyword] = reply_text
+            clear_admin_input(user_id)
             save_settings()
-            admin_input_mode.pop(user_id, None)
 
             await message.answer(
-                f"✅ Reply delay set to {delay} seconds."
+                f"✅ Keyword reply added for: <code>{html.escape(keyword)}</code>",
+                reply_markup=admin_panel_kb()
             )
             return
 
-    # Auto-Reply only works in private chats
+        if mode == "delete_keyword":
+            keyword = text.lower()
+
+            keyword_replies = settings.setdefault("keyword_replies", {})
+
+            if keyword in keyword_replies:
+                del keyword_replies[keyword]
+                save_settings()
+                result = f"✅ Deleted keyword: <code>{html.escape(keyword)}</code>"
+            else:
+                result = f"⚠️ Keyword not found: <code>{html.escape(keyword)}</code>"
+
+            clear_admin_input(user_id)
+
+            await message.answer(
+                result,
+                reply_markup=admin_panel_kb()
+            )
+            return
+
+    # Auto-reply only in private chats
     if message.chat.type != "private":
         return
 
-    # Ignore bot accounts
-    if message.from_user.is_bot:
-        return
-
-    # Do not auto-reply to the owner
+    # Do not auto-reply to the admin/owner
     if is_admin(user_id):
         return
 
-    settings["total_received"] += 1
+    settings["total_received"] = settings.get("total_received", 0) + 1
+    save_settings()
 
-    if not settings["enabled"]:
-        save_settings()
+    # Auto-reply disabled
+    if not settings.get("enabled", True):
         return
 
-    reply_text = None
-    incoming_text = message.text.lower()
+    reply_text = settings.get("reply_text", "")
+    if not reply_text:
+        return
 
-    if settings["reply_mode"] == "keywords":
-        for keyword, keyword_reply in settings["keyword_replies"].items():
+    # Keyword mode
+    if settings.get("reply_mode", "all") == "keywords":
+        matched_reply = None
+        keyword_replies = settings.get("keyword_replies", {})
+
+        incoming_text = text.lower()
+
+        for keyword, keyword_reply in keyword_replies.items():
             if keyword.lower() in incoming_text:
-                reply_text = keyword_reply
+                matched_reply = keyword_reply
                 break
 
-        if reply_text is None:
-            save_settings()
+        if matched_reply is None:
             return
 
-    else:
-        reply_text = settings["reply_message"]
+        reply_text = matched_reply
 
-    delay = settings["delay_seconds"]
+    # Optional delay
+    delay = settings.get("delay", 0)
 
-    if delay > 0:
+    if delay:
         await asyncio.sleep(delay)
 
     try:
-        # Disable HTML parsing for user-defined reply text
         await message.answer(reply_text, parse_mode=None)
-        settings["total_replied"] += 1
+
+        settings["total_replied"] = settings.get("total_replied", 0) + 1
         save_settings()
 
     except Exception:
-        logger.exception("Failed to send Auto-Reply")
+        logger.exception("Failed to send auto-reply")
 
 
 # ==================================================
@@ -711,7 +890,11 @@ async def text_message_handler(message: Message):
 
 async def main():
     logger.info("Starting 24x7 Reply Assistant...")
-    await dp.start_polling(bot)
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
