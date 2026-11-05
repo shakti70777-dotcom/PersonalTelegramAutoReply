@@ -281,9 +281,9 @@ async def generate_ai_reply(
 
     try:
         response = await ai_client.chat.completions.create(
-            model=AI_MODEL,
-            messages=messages,
-            temperature=0.7,
+    model=AI_MODEL,
+    messages=messages,
+        )
         )
 
         reply_text = (
