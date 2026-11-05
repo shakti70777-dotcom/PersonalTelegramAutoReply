@@ -86,6 +86,11 @@ def load_settings():
 
         if isinstance(saved_data, dict):
             settings_data.update(saved_data)
+            # Migrate settings created by earlier versions.
+            if "reply_message" not in saved_data and "reply_text" in saved_data:
+                settings_data["reply_message"] = saved_data["reply_text"]
+            if "delay_seconds" not in saved_data and "delay" in saved_data:
+                settings_data["delay_seconds"] = saved_data["delay"]
 
         if not isinstance(settings_data.get("keyword_replies"), dict):
             settings_data["keyword_replies"] = {}
@@ -141,53 +146,53 @@ def admin_panel_keyboard():
             [
                 InlineKeyboardButton(
                     text="🟢 Turn ON",
-                    callback_data="admin_enable",
+                    callback_data="toggle_on",
                 ),
                 InlineKeyboardButton(
                     text="🔴 Turn OFF",
-                    callback_data="admin_disable",
+                    callback_data="toggle_off",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="💬 Set Reply Message",
-                    callback_data="admin_set_reply",
+                    callback_data="set_reply",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="🌐 Select Language",
-                    callback_data="admin_language",
+                    callback_data="set_language",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="🎯 Reply Mode",
-                    callback_data="admin_reply_mode",
+                    callback_data="reply_mode",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="🔑 Keyword Replies",
-                    callback_data="admin_keywords",
+                    callback_data="manage_keywords",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="⏱ Reply Delay",
-                    callback_data="admin_delay",
+                    callback_data="set_delay",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="👁 Preview Reply",
-                    callback_data="admin_preview",
+                    callback_data="preview_reply",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="📊 Statistics",
-                    callback_data="admin_stats",
+                    callback_data="show_stats",
                 ),
             ],
         ]
@@ -200,21 +205,21 @@ def language_keyboard():
             [
                 InlineKeyboardButton(
                     text="🇬🇧 English",
-                    callback_data="lang_English",
+                    callback_data="language_English",
                 ),
                 InlineKeyboardButton(
                     text="🇮🇳 Hindi",
-                    callback_data="lang_Hindi",
+                    callback_data="language_Hindi",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="🇧🇩 Bengali",
-                    callback_data="lang_Bengali",
+                    callback_data="language_Bengali",
                 ),
                 InlineKeyboardButton(
                     text="🌍 Custom",
-                    callback_data="lang_Custom",
+                    callback_data="language_Custom",
                 ),
             ],
             [
@@ -304,15 +309,15 @@ async def show_admin_panel(message: Message):
 
 
 async def safe_edit_message(
-    callback: CallbackQuery,
+    message: Message,
     text: str,
     reply_markup=None,
 ):
-    if callback.message is None:
+    if message is None:
         return
 
     try:
-        await callback.message.edit_text(
+        await message.edit_text(
             text,
             reply_markup=reply_markup,
         )
@@ -407,7 +412,7 @@ async def cancel_command(message: Message):
     if is_admin(message.from_user.id):
         await message.answer(
             "❌ Input cancelled.",
-            reply_markup=admin_panel_kb()
+            reply_markup=admin_panel_keyboard()
         )
     else:
         await message.answer("Input cancelled.")
@@ -433,7 +438,7 @@ async def setdelay_command(message: Message):
         return
 
     clear_admin_input(message.from_user.id)
-    admin_input_mode[message.from_user.id] = "delay"
+    admin_input_mode[message.from_user.id] = "delay_seconds"
 
     await message.answer(
         "⏱️ Send the reply delay in seconds.\n"
@@ -490,7 +495,7 @@ async def admin_home_callback(callback: CallbackQuery):
         await safe_edit_message(
             callback.message,
             admin_status_text(),
-            reply_markup=admin_panel_kb()
+            reply_markup=admin_panel_keyboard()
         )
 
 
@@ -507,7 +512,7 @@ async def cancel_input_callback(callback: CallbackQuery):
         await safe_edit_message(
             callback.message,
             "❌ Input cancelled.\n\n" + admin_status_text(),
-            reply_markup=admin_panel_kb()
+            reply_markup=admin_panel_keyboard()
         )
 
 
@@ -526,7 +531,7 @@ async def toggle_on_callback(callback: CallbackQuery):
         await safe_edit_message(
             callback.message,
             admin_status_text(),
-            reply_markup=admin_panel_kb()
+            reply_markup=admin_panel_keyboard()
         )
 
 
@@ -545,7 +550,7 @@ async def toggle_off_callback(callback: CallbackQuery):
         await safe_edit_message(
             callback.message,
             admin_status_text(),
-            reply_markup=admin_panel_kb()
+            reply_markup=admin_panel_keyboard()
         )
 
 
@@ -580,7 +585,7 @@ async def set_language_callback(callback: CallbackQuery):
         await safe_edit_message(
             callback.message,
             "🌐 Choose a language label:",
-            reply_markup=language_kb()
+            reply_markup=language_keyboard()
         )
 
 
@@ -601,7 +606,7 @@ async def language_select_callback(callback: CallbackQuery):
             "🌐 Language label saved.\n\n"
             "Note: this setting changes the label only; it does not automatically translate messages.\n\n"
             + admin_status_text(),
-            reply_markup=admin_panel_kb()
+            reply_markup=admin_panel_keyboard()
         )
 
 
@@ -618,7 +623,7 @@ async def reply_mode_callback(callback: CallbackQuery):
         await safe_edit_message(
             callback.message,
             "⚙️ Choose the auto-reply mode:",
-            reply_markup=reply_mode_kb()
+            reply_markup=reply_mode_keyboard()
         )
 
 
@@ -642,7 +647,7 @@ async def reply_mode_select_callback(callback: CallbackQuery):
         await safe_edit_message(
             callback.message,
             admin_status_text(),
-            reply_markup=admin_panel_kb()
+            reply_markup=admin_panel_keyboard()
         )
 
 
@@ -676,7 +681,7 @@ async def set_delay_callback(callback: CallbackQuery):
         return
 
     clear_admin_input(callback.from_user.id)
-    admin_input_mode[callback.from_user.id] = "delay"
+    admin_input_mode[callback.from_user.id] = "delay_seconds"
     await callback.answer()
 
     if callback.message:
@@ -696,7 +701,7 @@ async def preview_reply_callback(callback: CallbackQuery):
     clear_admin_input(callback.from_user.id)
     await callback.answer()
 
-    preview_text = html.escape(str(settings.get("reply_text", "")))
+    preview_text = html.escape(str(settings.get("reply_message", DEFAULT_SETTINGS["reply_message"])))
 
     if callback.message:
         await safe_edit_message(
@@ -746,17 +751,17 @@ async def text_message_handler(message: Message):
         mode = admin_input_mode.get(user_id)
 
         if mode == "reply":
-            settings["reply_text"] = text
+            settings["reply_message"] = text
             clear_admin_input(user_id)
             save_settings()
 
             await message.answer(
                 "✅ Auto-reply message updated.",
-                reply_markup=admin_panel_kb()
+                reply_markup=admin_panel_keyboard()
             )
             return
 
-        if mode == "delay":
+        if mode == "delay_seconds":
             try:
                 delay = int(text)
 
@@ -767,13 +772,13 @@ async def text_message_handler(message: Message):
                     )
                     return
 
-                settings["delay"] = delay
+                settings["delay_seconds"] = delay
                 clear_admin_input(user_id)
                 save_settings()
 
                 await message.answer(
                     f"✅ Reply delay set to {delay} seconds.",
-                    reply_markup=admin_panel_kb()
+                    reply_markup=admin_panel_keyboard()
                 )
             except ValueError:
                 await message.answer(
@@ -808,7 +813,7 @@ async def text_message_handler(message: Message):
 
             await message.answer(
                 f"✅ Keyword reply added for: <code>{html.escape(keyword)}</code>",
-                reply_markup=admin_panel_kb()
+                reply_markup=admin_panel_keyboard()
             )
             return
 
@@ -828,7 +833,7 @@ async def text_message_handler(message: Message):
 
             await message.answer(
                 result,
-                reply_markup=admin_panel_kb()
+                reply_markup=admin_panel_keyboard()
             )
             return
 
@@ -847,7 +852,7 @@ async def text_message_handler(message: Message):
     if not settings.get("enabled", True):
         return
 
-    reply_text = settings.get("reply_text", "")
+    reply_text = settings.get("reply_message", DEFAULT_SETTINGS["reply_message"])
     if not reply_text:
         return
 
@@ -869,7 +874,7 @@ async def text_message_handler(message: Message):
         reply_text = matched_reply
 
     # Optional delay
-    delay = settings.get("delay", 0)
+    delay = settings.get("delay_seconds", 0)
 
     if delay:
         await asyncio.sleep(delay)
