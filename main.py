@@ -893,15 +893,6 @@ async def text_message_handler(message: Message):
 # START BOT
 # ==================================================
 
-async def main():
-    logger.info("Starting 24x7 Reply Assistant...")
-
-    try:
-        await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
-
-
 async def run_web_server():
     from aiohttp import web
 
@@ -919,12 +910,17 @@ async def run_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    logging.info("Health server started on port %s", port)
+    logger.info("Health server started on port %s", port)
 
 
 async def main():
-    await run_web_server()
-    await dp.start_polling(bot)
+    logger.info("Starting 24x7 Reply Assistant...")
+
+    try:
+        await run_web_server()
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
