@@ -915,8 +915,16 @@ async def generate_ai_reply(sender_id: int, incoming_text: str) -> str:
 
 
 # =====================================================
-# PERSONAL TELEGRAM INCOMING MESSAGE HANDLER
+# REPLY COOLDOWN CHECK
 # =====================================================
+
+def cooldown_is_over(sender_id: int) -> bool:
+    last_reply_time = last_replied.get(sender_id, 0)
+
+    return (
+        time.time() - last_reply_time
+        >= REPLY_COOLDOWN_SECONDS
+    )
 
 @telegram_client.on(events.NewMessage(incoming=True))
 async def personal_message_handler(event):
