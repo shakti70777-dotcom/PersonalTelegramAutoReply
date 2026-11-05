@@ -755,14 +755,19 @@ async def auto_reply_handler(event):
         current_time = time.time()
         previous_reply = last_replied.get(user_id, 0)
 
-                if current_time - previous_reply < REPLY_COOLDOWN_SECONDS:
-            logger.info("Cooldown active for user ID %s", user_id)
+        if current_time - previous_reply < REPLY_COOLDOWN_SECONDS:
+            logger.info(
+                "Cooldown active for user ID %s",
+                user_id,
+            )
             return
 
         last_replied[user_id] = current_time
 
         try:
-            specific_app_name = extract_specific_app_name(incoming_text)
+            specific_app_name = extract_specific_app_name(
+                incoming_text
+            )
 
             if specific_app_name:
                 handled = await handle_specific_app_request(
@@ -774,7 +779,9 @@ async def auto_reply_handler(event):
                     return
 
             if is_generic_earning_app_request(incoming_text):
-                handled = await handle_generic_earning_request(event)
+                handled = await handle_generic_earning_request(
+                    event
+                )
 
                 if handled:
                     return
@@ -784,14 +791,28 @@ async def auto_reply_handler(event):
                 incoming_text=incoming_text,
             )
 
+            if not reply_text:
+                logger.warning(
+                    "AI returned an empty reply for user ID %s",
+                    user_id,
+                )
+                last_replied.pop(user_id, None)
+                return
+
         except Exception:
-            logger.exception("Message processing failed")
+            logger.exception(
+                "Message processing failed for user ID %s",
+                user_id,
+            )
             last_replied.pop(user_id, None)
             return
 
         await event.reply(reply_text)
 
-        logger.info("AI replied to private user ID %s", user_id)
+        logger.info(
+            "AI replied to private user ID %s",
+            user_id,
+        )
 
     except Exception:
         logger.exception("Auto-reply handler failed")
@@ -824,7 +845,10 @@ async def start_web_server():
 
     await site.start()
 
-    logger.info("Health server started on port %s", PORT)
+    logger.info(
+        "Health server started on port %s",
+        PORT,
+    )
 
     return runner
 
@@ -840,6 +864,7 @@ async def main():
         runner = await start_web_server()
 
         logger.info("Connecting personal Telegram account...")
+
         await telegram_client.start()
 
         me = await telegram_client.get_me()
@@ -859,8 +884,12 @@ async def main():
             ),
         )
 
+    except Exception:
+        logger.exception("Application startup or runtime failed")
+        raise
+
     finally:
-        if runner:
+        if runner is not None:
             await runner.cleanup()
 
         if telegram_client.is_connected():
@@ -869,6 +898,10 @@ async def main():
         await control_bot.session.close()
         await openai_client.close()
 
+
+# =====================================================
+# APPLICATION ENTRY POINT
+# =====================================================
 
 if __name__ == "__main__":
     asyncio.run(main())
