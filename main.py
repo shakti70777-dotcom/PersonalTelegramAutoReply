@@ -801,25 +801,24 @@ async def handle_specific_app_lookup(
         return
 
     if channel_message is None:
-        await telegram_client.send_message(
-            sender_id,
+        await event.respond(
             APP_NOT_FOUND_MESSAGE,
             link_preview=False,
         )
         return
 
     forwarded = await forward_channel_post(
-        sender_id,
+        event,
         channel_message,
+        APP_LISTED_MESSAGE,
     )
 
     if not forwarded:
-        await telegram_client.send_message(
-            sender_id,
+        await event.respond(
             CHANNEL_CHECK_ERROR_MESSAGE,
             link_preview=False,
         )
-
+        return
 
 # ============================================================
 # GENERIC APP REQUEST MATCHING
