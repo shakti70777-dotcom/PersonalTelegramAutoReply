@@ -1,2 +1,4 @@
 telethon
 aiohttp
+openai
+aiogram
